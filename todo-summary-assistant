@@ -1,0 +1,143 @@
+// Project: Todo Summary Assistant
+
+// Folder: backend/server.js
+const express = require('express');
+const cors = require('cors');
+const dotenv = require('dotenv');
+const todoRoutes = require('./routes/todoRoutes');
+const summaryRoute = require('./routes/summaryRoute');
+
+dotenv.config();
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+app.use('/todos', todoRoutes);
+app.use('/summarize', summaryRoute);
+
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+
+// Folder: backend/routes/todoRoutes.js
+const express = require('express');
+const router = express.Router();
+const {
+  getTodos,
+  addTodo,
+  deleteTodo,
+} = require('../controllers/todoController');
+
+router.get('/', getTodos);
+router.post('/', addTodo);
+router.delete('/:id', deleteTodo);
+
+module.exports = router;
+
+// Folder: backend/routes/summaryRoute.js
+const express = require('express');
+const router = express.Router();
+const { summarizeAndSend } = require('../controllers/summaryController');
+
+router.post('/', summarizeAndSend);
+
+module.exports = router;
+
+// Folder: backend/controllers/summaryController.js
+const { createClient } = require('@supabase/supabase-js');
+const axios = require('axios');
+
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+
+exports.summarizeAndSend = async (req, res) => {
+  try {
+    const { data: todos } = await supabase.from('todos').select('*').eq('completed', false);
+
+    const prompt = `Summarize the following todos:\n${todos.map(t => '- ' + t.title).join('\n')}`;
+
+    const gptRes = await axios.post('https://api.openai.com/v1/chat/completions', {
+      model: 'gpt-3.5-turbo',
+      messages: [{ role: 'user', content: prompt }],
+    }, {
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      }
+    });
+
+    const summary = gptRes.data.choices[0].message.content;
+    await axios.post(process.env.SLACK_WEBHOOK_URL, { text: summary });
+
+    res.status(200).json({ message: 'Summary sent to Slack successfully.' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Error generating or sending summary.' });
+  }
+};
+
+// Folder: backend/.env.example
+PORT=5000
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_KEY=your-service-role-key
+OPENAI_API_KEY=your-openai-api-key
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/your/webhook/url
+
+// Folder: frontend/src/App.jsx
+import React, { useEffect, useState } from 'react';
+import axios from 'axios';
+import { toast, ToastContainer } from 'react-toastify';
+import 'react-toastify/dist/ReactToastify.css';
+
+function App() {
+  const [todos, setTodos] = useState([]);
+  const [input, setInput] = useState('');
+
+  const fetchTodos = async () => {
+    const res = await axios.get('http://localhost:5000/todos');
+    setTodos(res.data);
+  };
+
+  const addTodo = async () => {
+    await axios.post('http://localhost:5000/todos', { title: input });
+    setInput('');
+    fetchTodos();
+  };
+
+  const deleteTodo = async (id) => {
+    await axios.delete(`http://localhost:5000/todos/${id}`);
+    fetchTodos();
+  };
+
+  const sendSummary = async () => {
+    try {
+      await axios.post('http://localhost:5000/summarize');
+      toast.success('Summary sent to Slack!');
+    } catch (error) {
+      toast.error('Failed to send summary.');
+    }
+  };
+
+  useEffect(() => { fetchTodos(); }, []);
+
+  return (
+    <div className="App">
+      <h1>Todo Summary Assistant</h1>
+      <input value={input} onChange={(e) => setInput(e.target.value)} />
+      <button onClick={addTodo}>Add Todo</button>
+      <ul>
+        {todos.map(todo => (
+          <li key={todo.id}>
+            {todo.title}
+            <button onClick={() => deleteTodo(todo.id)}>Delete</button>
+          </li>
+        ))}
+      </ul>
+      <button onClick={sendSummary}>Summarize & Send to Slack</button>
+      <ToastContainer />
+    </div>
+  );
+}
+
+export default App;
+
+// Folder: frontend/.env.example
+REACT_APP_API_BASE_URL=http://localhost:5000
